@@ -8,7 +8,7 @@ import ReactFlow, {
   useReactFlow,
   ReactFlowProvider,
   type Connection,
-  type Edge,
+  
   type Node,
   BackgroundVariant,
   MarkerType,
