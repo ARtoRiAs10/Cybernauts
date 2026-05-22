@@ -1,7 +1,11 @@
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { getGraphData } from '../services/user.service';
 
-export function getGraph(_req: Request, res: Response): void {
-  const graph = getGraphData();
-  res.json({ success: true, data: graph });
+export async function getGraph(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const graph = await getGraphData();
+    res.json({ success: true, data: graph });
+  } catch (err) {
+    next(err);
+  }
 }

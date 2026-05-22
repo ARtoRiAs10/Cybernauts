@@ -24,7 +24,7 @@ export function UserPanel({ userId, onClose }: Props) {
 
   if (!user) return null;
 
-  const friends = users.filter((u) => user.friends.includes(u.id));
+  const friends = users.filter((u) => user.friends?.includes(u.id));
 
   const handleDelete = async () => {
     try {
@@ -32,7 +32,7 @@ export function UserPanel({ userId, onClose }: Props) {
       toast.success(`${user.username} deleted`);
       onClose();
     } catch (e: any) {
-      toast.error(e.message);
+      toast.error(e.message || 'Failed to delete user');
     }
     setConfirmDelete(false);
   };
@@ -41,40 +41,47 @@ export function UserPanel({ userId, onClose }: Props) {
     const target = users.find((u) => u.id === targetId);
     try {
       await unlinkUsers(userId, targetId);
-      toast.success(`Unfriended ${target?.username}`);
+      toast.success(`Unfriended ${target?.username || 'user'}`);
     } catch (e: any) {
-      toast.error(e.message);
+      toast.error(e.message || 'Failed to unlink users');
     }
     setUnlinkTarget(null);
   };
 
   const handleUpdate = async (data: { username: string; age: number; hobbies: string[] }) => {
-    await updateUser(userId, data);
-    toast.success('User updated');
+    try {
+      await updateUser(userId, data);
+      toast.success('User updated');
+      setEditing(false); 
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update user');
+    }
   };
 
+
+  const score = user.popularityScore ?? 0;
   const scoreColor =
-    user.popularityScore > 10 ? 'text-amber-400' :
-    user.popularityScore > 5  ? 'text-emerald-400' :
+    score > 10 ? 'text-amber-400' :
+    score > 5  ? 'text-emerald-400' :
     'text-zinc-500';
 
   return (
     <>
-      <aside className="w-72 flex-shrink-0 flex flex-col bg-[#0f1520] border-l border-zinc-800 overflow-y-auto">
+      <aside className="w-72 flex-shrink-0 flex flex-col bg-[#0f1520] border-l border-zinc-800 overflow-y-auto h-full">
         {/* Header */}
         <div className="p-4 border-b border-zinc-800">
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-[#1a2236] border border-zinc-700 flex items-center justify-center text-sm font-bold text-zinc-200 flex-shrink-0">
-                {user.username.slice(0, 2).toUpperCase()}
+                {(user.username || '??').slice(0, 2).toUpperCase()}
               </div>
-              <div>
-                <h2 className="text-sm font-semibold text-zinc-100 leading-none">{user.username}</h2>
-                <p className="text-xs text-zinc-500 mt-0.5">Age {user.age}</p>
+              <div className="truncate">
+                <h2 className="text-sm font-semibold text-zinc-100 leading-none truncate">{user.username || 'Anonymous'}</h2>
+                <p className="text-xs text-zinc-500 mt-0.5">Age {user.age ?? 0}</p>
               </div>
             </div>
-            <button onClick={onClose} className="text-zinc-600 hover:text-zinc-300 transition-colors text-lg leading-none mt-1">
-              ×
+            <button onClick={onClose} className="text-zinc-600 hover:text-zinc-300 transition-colors text-lg leading-none mt-1 px-1">
+              &times;
             </button>
           </div>
 
@@ -83,7 +90,7 @@ export function UserPanel({ userId, onClose }: Props) {
             <Star size={12} className={scoreColor} />
             <span className="text-xs text-zinc-400">Popularity</span>
             <span className={`ml-auto font-mono text-sm font-bold ${scoreColor}`}>
-              {user.popularityScore.toFixed(1)}
+              {score.toFixed(1)}
             </span>
           </div>
 
@@ -110,7 +117,7 @@ export function UserPanel({ userId, onClose }: Props) {
             <Hash size={11} className="text-zinc-500" />
             <h3 className="text-[11px] font-semibold uppercase tracking-widest text-zinc-400">Hobbies</h3>
           </div>
-          {user.hobbies.length > 0 ? (
+          {user.hobbies && user.hobbies.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {user.hobbies.map((h) => (
                 <span
@@ -142,12 +149,12 @@ export function UserPanel({ userId, onClose }: Props) {
                   className="flex items-center gap-2 px-2.5 py-1.5 bg-[#1a2236] rounded-lg border border-zinc-800 group"
                 >
                   <div className="w-5 h-5 rounded-full bg-zinc-800 flex items-center justify-center text-[9px] font-bold text-zinc-400 flex-shrink-0">
-                    {f.username.slice(0, 2).toUpperCase()}
+                    {(f.username || '??').slice(0, 2).toUpperCase()}
                   </div>
                   <span className="text-xs text-zinc-300 flex-1 truncate">{f.username}</span>
                   <button
                     onClick={() => setUnlinkTarget(f.id)}
-                    className="opacity-0 group-hover:opacity-100 text-red-600 hover:text-red-400 transition-all"
+                    className="opacity-0 group-hover:opacity-100 text-red-600 hover:text-red-400 transition-all ml-auto"
                     title="Unlink"
                   >
                     <Unlink size={11} />
@@ -166,6 +173,7 @@ export function UserPanel({ userId, onClose }: Props) {
         </div>
       </aside>
 
+      {/* Overlays / Modals */}
       {editing && (
         <UserForm user={user} onSave={handleUpdate} onClose={() => setEditing(false)} />
       )}
@@ -173,18 +181,18 @@ export function UserPanel({ userId, onClose }: Props) {
       {confirmDelete && (
         <ConfirmDialog
           message={
-            user.friends.length > 0
+            (user.friends?.length ?? 0) > 0
               ? `${user.username} still has ${user.friends.length} friend(s). Unlink them first before deleting.`
               : `Delete ${user.username}? This cannot be undone.`
           }
-          onConfirm={user.friends.length > 0 ? () => setConfirmDelete(false) : handleDelete}
+          onConfirm={(user.friends?.length ?? 0) > 0 ? () => setConfirmDelete(false) : handleDelete}
           onCancel={() => setConfirmDelete(false)}
         />
       )}
 
       {unlinkTarget && (
         <ConfirmDialog
-          message={`Remove friendship with ${users.find((u) => u.id === unlinkTarget)?.username}?`}
+          message={`Remove friendship with ${users.find((u) => u.id === unlinkTarget)?.username || 'this user'}?`}
           onConfirm={() => handleUnlink(unlinkTarget)}
           onCancel={() => setUnlinkTarget(null)}
         />

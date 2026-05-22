@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db';
+import pool from '../db';
 import type { User, UserRow, CreateUserDto, UpdateUserDto } from '../models/user.model';
 import { recomputeConnectedScores, persistScore } from './score.service';
 
@@ -8,37 +8,47 @@ import { recomputeConnectedScores, persistScore } from './score.service';
 export function parseUserRow(row: UserRow): User {
   return {
     ...row,
-    hobbies: JSON.parse(row.hobbies),
-    friends: JSON.parse(row.friends),
+    // Neon returns JSONB columns already parsed; guard for string fallback
+    hobbies: typeof row.hobbies === 'string' ? JSON.parse(row.hobbies) : row.hobbies,
+    friends: typeof row.friends === 'string' ? JSON.parse(row.friends) : row.friends,
   };
 }
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
 
-export function getAllUsers(): User[] {
-  const rows = db.prepare('SELECT * FROM users ORDER BY createdAt DESC').all() as UserRow[];
+export async function getAllUsers(): Promise<User[]> {
+
+  const { rows } = await pool.query<UserRow>(
+    'SELECT * FROM users ORDER BY "createdAt" DESC'
+  );
   return rows.map(parseUserRow);
 }
 
-export function getUserById(id: string): User | null {
-  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined;
-  return row ? parseUserRow(row) : null;
+export async function getUserById(id: string): Promise<User | null> {
+
+  const { rows } = await pool.query<UserRow>(
+    'SELECT * FROM users WHERE "id" = $1',
+    [id]
+  );
+  return rows[0] ? parseUserRow(rows[0]) : null;
 }
 
-export function createUser(dto: CreateUserDto): User {
+export async function createUser(dto: CreateUserDto): Promise<User> {
   const id = uuidv4();
   const now = new Date().toISOString();
 
-  db.prepare(`
-    INSERT INTO users (id, username, age, hobbies, friends, createdAt, popularityScore)
-    VALUES (?, ?, ?, ?, '[]', ?, 0)
-  `).run(id, dto.username, dto.age, JSON.stringify(dto.hobbies ?? []), now);
 
-  return getUserById(id)!;
+  await pool.query(
+    `INSERT INTO users ("id", "username", "age", "hobbies", "friends", "createdAt", "popularityScore")
+     VALUES ($1, $2, $3, $4::jsonb, '[]'::jsonb, $5, 0)`,
+    [id, dto.username, dto.age, JSON.stringify(dto.hobbies ?? []), now]
+  );
+
+  return (await getUserById(id))!;
 }
 
-export function updateUser(id: string, dto: UpdateUserDto): User | null {
-  const user = getUserById(id);
+export async function updateUser(id: string, dto: UpdateUserDto): Promise<User | null> {
+  const user = await getUserById(id);
   if (!user) return null;
 
   const updated = {
@@ -47,79 +57,120 @@ export function updateUser(id: string, dto: UpdateUserDto): User | null {
     hobbies: dto.hobbies ?? user.hobbies,
   };
 
-  db.prepare(`
-    UPDATE users SET username = ?, age = ?, hobbies = ? WHERE id = ?
-  `).run(updated.username, updated.age, JSON.stringify(updated.hobbies), id);
+
+  await pool.query(
+    `UPDATE users SET "username" = $1, "age" = $2, "hobbies" = $3::jsonb WHERE "id" = $4`,
+    [updated.username, updated.age, JSON.stringify(updated.hobbies), id]
+  );
 
   // Hobbies changed → recompute scores for this user and their friends
-  recomputeConnectedScores(id);
+  await recomputeConnectedScores(id);
 
-  return getUserById(id)!;
+  return getUserById(id);
 }
 
-export function deleteUser(id: string): 'OK' | 'NOT_FOUND' | 'LINKED' {
-  const user = getUserById(id);
+export async function deleteUser(id: string): Promise<'OK' | 'NOT_FOUND' | 'LINKED'> {
+  const user = await getUserById(id);
   if (!user) return 'NOT_FOUND';
-
   if (user.friends.length > 0) return 'LINKED';
 
-  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+
+  await pool.query('DELETE FROM users WHERE "id" = $1', [id]);
   return 'OK';
 }
 
 // ─── Relationships ────────────────────────────────────────────────────────────
 
-export function linkUsers(
+export async function linkUsers(
   userId: string,
   targetId: string
-): 'OK' | 'NOT_FOUND' | 'SELF_LINK' | 'ALREADY_LINKED' {
-  const user = getUserById(userId);
-  const target = getUserById(targetId);
+): Promise<'OK' | 'NOT_FOUND' | 'SELF_LINK' | 'ALREADY_LINKED'> {
+  const [user, target] = await Promise.all([getUserById(userId), getUserById(targetId)]);
 
   if (!user || !target) return 'NOT_FOUND';
   if (userId === targetId) return 'SELF_LINK';
 
-  // Prevent A→B and B→A being stored as separate links (mutual)
   if (user.friends.includes(targetId) || target.friends.includes(userId)) {
     return 'ALREADY_LINKED';
   }
 
-  const updateFriends = db.prepare('UPDATE users SET friends = ? WHERE id = ?');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const runTransaction = db.transaction(() => {
-    updateFriends.run(JSON.stringify([...user.friends, targetId]), userId);
-    updateFriends.run(JSON.stringify([...target.friends, userId]), targetId);
-  });
+    await client.query(
+      `UPDATE users SET "friends" = "friends" || $1::jsonb WHERE "id" = $2`,
+      [JSON.stringify([targetId]), userId]
+    );
+    await client.query(
+      `UPDATE users SET "friends" = "friends" || $1::jsonb WHERE "id" = $2`,
+      [JSON.stringify([userId]), targetId]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
-  runTransaction();
-
-  persistScore(userId);
-  persistScore(targetId);
+  await Promise.all([persistScore(userId), persistScore(targetId)]);
 
   return 'OK';
 }
 
-export function unlinkUsers(
+export async function unlinkUsers(
   userId: string,
   targetId: string
-): 'OK' | 'NOT_FOUND' | 'NOT_LINKED' {
-  const user = getUserById(userId);
-  const target = getUserById(targetId);
+): Promise<'OK' | 'NOT_FOUND' | 'NOT_LINKED'> {
+  const [user, target] = await Promise.all([getUserById(userId), getUserById(targetId)]);
 
   if (!user || !target) return 'NOT_FOUND';
   if (!user.friends.includes(targetId)) return 'NOT_LINKED';
 
-  const updateFriends = db.prepare('UPDATE users SET friends = ? WHERE id = ?');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const runTransaction = db.transaction(() => {
-    updateFriends.run(JSON.stringify(user.friends.filter((id) => id !== targetId)), userId);
-    updateFriends.run(JSON.stringify(target.friends.filter((id) => id !== userId)), targetId);
-  });
 
-  runTransaction();
+    await client.query(
+      `UPDATE users
+       SET "friends" = COALESCE(
+         (
+           SELECT jsonb_agg(elem)
+           FROM jsonb_array_elements("friends") AS elem
+           WHERE elem #>> '{}' != $1
+         ),
+         '[]'::jsonb
+       )
+       WHERE "id" = $2`,
+      [targetId, userId]
+    );
 
-  persistScore(userId);
-  persistScore(targetId);
+
+    await client.query(
+      `UPDATE users
+       SET "friends" = COALESCE(
+         (
+           SELECT jsonb_agg(elem)
+           FROM jsonb_array_elements("friends") AS elem
+           WHERE elem #>> '{}' != $1
+         ),
+         '[]'::jsonb
+       )
+       WHERE "id" = $2`,
+      [userId, targetId]
+    );
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  await Promise.all([persistScore(userId), persistScore(targetId)]);
 
   return 'OK';
 }
@@ -131,8 +182,8 @@ export interface GraphData {
   edges: Array<{ source: string; target: string }>;
 }
 
-export function getGraphData(): GraphData {
-  const users = getAllUsers();
+export async function getGraphData(): Promise<GraphData> {
+  const users = await getAllUsers();
 
   const nodes = users.map((u) => ({
     id: u.id,
@@ -141,11 +192,11 @@ export function getGraphData(): GraphData {
     popularityScore: u.popularityScore,
   }));
 
-  // De-duplicate edges: only store A→B where A < B (lexicographic)
   const edgeSet = new Set<string>();
   const edges: GraphData['edges'] = [];
 
   for (const user of users) {
+    if (!user.friends) continue;
     for (const friendId of user.friends) {
       const key = [user.id, friendId].sort().join('|');
       if (!edgeSet.has(key)) {

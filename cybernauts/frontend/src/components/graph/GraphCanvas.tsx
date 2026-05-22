@@ -5,6 +5,8 @@ import ReactFlow, {
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
+  ReactFlowProvider,
   type Connection,
   type Edge,
   type Node,
@@ -30,7 +32,6 @@ interface Props {
   onHobbyDropHandled: () => void;
 }
 
-// Deterministic layout via simple circle arrangement
 function circleLayout(count: number, radius = 380): { x: number; y: number }[] {
   if (count === 0) return [];
   return Array.from({ length: count }, (_, i) => {
@@ -42,64 +43,73 @@ function circleLayout(count: number, radius = 380): { x: number; y: number }[] {
   });
 }
 
-export function GraphCanvas({ onNodeClick, pendingHobbyDrop, onHobbyDropHandled }: Props) {
+
+function GraphCanvasInner({ onNodeClick, pendingHobbyDrop, onHobbyDropHandled }: Props) {
   const { graph, users, linkUsers, updateUser, setSelectedUser } = useStore();
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<UserNodeData>([]);
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState([]);
   const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
   const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
+  
 
-  // Build RF nodes from graph data
+  const { project } = useReactFlow();
+
+
   useEffect(() => {
-    if (!graph) return;
+    if (!graph?.nodes) return;
 
     const positions = positionsRef.current;
     const nodeIds = graph.nodes.map((n) => n.id);
-
-    // Assign positions to new nodes only
     const freshPositions = circleLayout(nodeIds.length, Math.max(200, nodeIds.length * 50));
+
     nodeIds.forEach((id, i) => {
       if (!positions[id]) {
-        positions[id] = freshPositions[i] ?? { x: Math.random() * 600, y: Math.random() * 400 };
+        positions[id] = freshPositions[i] ?? { x: Math.random() * 200, y: Math.random() * 200 };
       }
     });
 
-    const newNodes: Node<UserNodeData>[] = graph.nodes.map((n) => {
-      const isHigh = n.popularityScore > 5;
-      return {
-        id: n.id,
-        type: isHigh ? 'HighScoreNode' : 'LowScoreNode',
-        position: positions[n.id],
-        data: {
-          username: n.username,
-          age: n.age,
-          popularityScore: n.popularityScore,
-          isConnecting: connectingNodeId !== null && connectingNodeId !== n.id,
-        },
-      };
-    });
 
-    const newEdges: Edge[] = graph.edges.map((e) => ({
-      id: `${e.source}-${e.target}`,
-      source: e.source,
-      target: e.target,
-      style: { stroke: '#3f4a5c', strokeWidth: 1.5 },
-      markerEnd: { type: MarkerType.Arrow, color: '#3f4a5c' },
-    }));
+    setRfNodes((prevNodes) =>
+      graph.nodes.map((n) => {
+        const isHigh = n.popularityScore > 5;
+        const fallbackPos = positions[n.id] ?? { x: 0, y: 0 };
+        const existingNode = prevNodes.find((p) => p.id === n.id);
+        
+        return {
+          id: n.id,
+          type: isHigh ? 'HighScoreNode' : 'LowScoreNode',
+          position: existingNode ? existingNode.position : fallbackPos,
+          data: {
+            username: n.username,
+            age: n.age,
+            popularityScore: n.popularityScore,
+            isConnecting: connectingNodeId !== null && connectingNodeId !== n.id,
+          },
+        };
+      })
+    );
 
-    setRfNodes(newNodes);
-    setRfEdges(newEdges);
-  }, [graph, connectingNodeId]);
+    setRfEdges(
+      graph.edges.map((e) => ({
+        id: `${e.source}-${e.target}`,
+        source: e.source,
+        target: e.target,
+        style: { stroke: '#3f4a5c', strokeWidth: 1.5 },
+        markerEnd: { type: MarkerType.Arrow, color: '#3f4a5c' },
+      }))
+    );
+  }, [graph, connectingNodeId, setRfNodes, setRfEdges]);
 
-  // Sync node positions back
+
   const onNodeDragStop = useCallback((_: any, node: Node) => {
     positionsRef.current[node.id] = node.position;
   }, []);
 
-  // Handle drag-connect between nodes → link users
   const onConnect = useCallback(
     async (connection: Connection) => {
       if (!connection.source || !connection.target) return;
+      if (connection.source === connection.target) return; // Prevent self-connections
+      
       try {
         await linkUsers(connection.source, connection.target);
         toast.success('Friendship created!');
@@ -119,22 +129,24 @@ export function GraphCanvas({ onNodeClick, pendingHobbyDrop, onHobbyDropHandled 
     setConnectingNodeId(null);
   }, []);
 
-  // Handle hobby drop onto a node
+
   useEffect(() => {
     if (!pendingHobbyDrop) return;
     const { nodeId, hobby } = pendingHobbyDrop;
     const user = users.find((u) => u.id === nodeId);
     if (!user) return;
-    if (user.hobbies.includes(hobby)) {
+    
+    if (user.hobbies?.includes(hobby)) {
       toast('Already has that hobby', { icon: '🎯' });
       onHobbyDropHandled();
       return;
     }
-    updateUser(nodeId, { hobbies: [...user.hobbies, hobby] })
+
+    updateUser(nodeId, { hobbies: [...(user.hobbies ?? []), hobby] })
       .then(() => toast.success(`Added "${hobby}" to ${user.username}`))
-      .catch((err: Error) => toast.error(err.message))
+      .catch((err: Error) => toast.error(err.message || 'Failed to update hobbies'))
       .finally(onHobbyDropHandled);
-  }, [pendingHobbyDrop]);
+  }, [pendingHobbyDrop, users, updateUser, onHobbyDropHandled]);
 
   const onNodeClickRF = useCallback(
     (_: any, node: Node) => {
@@ -144,47 +156,49 @@ export function GraphCanvas({ onNodeClick, pendingHobbyDrop, onHobbyDropHandled 
     [onNodeClick, setSelectedUser]
   );
 
-  // Drop from hobby sidebar onto canvas
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       const hobby = e.dataTransfer.getData('hobby');
       if (!hobby) return;
 
-      // Find which node is under the cursor — approximate via bounding box
       const wrapper = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const x = e.clientX - wrapper.left;
-      const y = e.clientY - wrapper.top;
+      
 
-      // Find closest node position (using stored positions)
+      const projectCanvasCoord = project({
+        x: e.clientX - wrapper.left,
+        y: e.clientY - wrapper.top,
+      });
+
       let closestId: string | null = null;
       let closestDist = Infinity;
 
+
       rfNodes.forEach((n) => {
-        // The flow canvas center is at half the container
-        const nx = n.position.x + wrapper.width / 2;
-        const ny = n.position.y + wrapper.height / 2;
-        const dist = Math.hypot(nx - x, ny - y);
+        const dist = Math.hypot(n.position.x - projectCanvasCoord.x, n.position.y - projectCanvasCoord.y);
         if (dist < closestDist) {
           closestDist = dist;
           closestId = n.id;
         }
       });
 
-      if (closestId && closestDist < 80) {
+
+      if (closestId && closestDist < 75) {
         const user = users.find((u) => u.id === closestId);
         if (user) {
-          if (user.hobbies.includes(hobby)) {
+          const currentHobbies = user.hobbies ?? [];
+          if (currentHobbies.includes(hobby)) {
             toast('Already has that hobby', { icon: '🎯' });
             return;
           }
-          updateUser(closestId, { hobbies: [...user.hobbies, hobby] })
+          updateUser(closestId, { hobbies: [...currentHobbies, hobby] })
             .then(() => toast.success(`Added "${hobby}" to ${user.username}`))
-            .catch((err: Error) => toast.error(err.message));
+            .catch((err: Error) => toast.error(err.message || 'Failed to add hobby'));
         }
       }
     },
-    [rfNodes, users, updateUser]
+    [rfNodes, users, updateUser, project]
   );
 
   return (
@@ -231,5 +245,14 @@ export function GraphCanvas({ onNodeClick, pendingHobbyDrop, onHobbyDropHandled 
         />
       </ReactFlow>
     </div>
+  );
+}
+
+
+export function GraphCanvas(props: Props) {
+  return (
+    <ReactFlowProvider>
+      <GraphCanvasInner {...props} />
+    </ReactFlowProvider>
   );
 }

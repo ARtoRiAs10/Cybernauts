@@ -45,4 +45,18 @@ export interface RecommendationsResponse {
   hobbies: HobbyRecommendation[];
 }
 
-export type ToastType = 'success' | 'error' | 'info';
+
+export type ToastType = 'success' | 'error' | 'info' | 'loading' | 'secondary';
+
+
+export interface UserUpdatePayload {
+  username?: string;
+  age?: number;
+  hobbies?: string[];
+}
+
+export interface RecommendationFeedbackPayload {
+  targetId: string;
+  type: 'friend' | 'hobby';
+  feedback: 'accepted' | 'rejected';
+}

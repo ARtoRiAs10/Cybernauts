@@ -5,21 +5,29 @@ import type { CreateUserDto, UpdateUserDto, LinkDto, FeedbackDto } from '../mode
 
 // ─── Users CRUD ───────────────────────────────────────────────────────────────
 
-export function getUsers(_req: Request, res: Response): void {
-  const users = userService.getAllUsers();
-  res.json({ success: true, data: users });
-}
-
-export function getUser(req: Request, res: Response, next: NextFunction): void {
-  const user = userService.getUserById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, error: 'User not found' });
-    return;
+export async function getUsers(_req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const users = await userService.getAllUsers();
+    res.json({ success: true, data: users });
+  } catch (err) {
+    next(err);
   }
-  res.json({ success: true, data: user });
 }
 
-export function createUser(req: Request, res: Response, next: NextFunction): void {
+export async function getUser(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const user = await userService.getUserById(req.params.id);
+    if (!user) {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
+    res.json({ success: true, data: user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   const { username, age, hobbies } = req.body as CreateUserDto;
 
   if (!username || typeof username !== 'string') {
@@ -36,10 +44,11 @@ export function createUser(req: Request, res: Response, next: NextFunction): voi
   }
 
   try {
-    const user = userService.createUser({ username, age, hobbies });
+    const user = await userService.createUser({ username, age, hobbies });
     res.status(201).json({ success: true, data: user });
   } catch (err: any) {
-    if (err.message?.includes('UNIQUE constraint failed')) {
+    // Postgres unique violation code: 23505
+    if (err.code === '23505' || err.message?.includes('unique')) {
       res.status(409).json({ success: false, error: 'Username already taken' });
       return;
     }
@@ -47,7 +56,7 @@ export function createUser(req: Request, res: Response, next: NextFunction): voi
   }
 }
 
-export function updateUser(req: Request, res: Response, next: NextFunction): void {
+export async function updateUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   const dto = req.body as UpdateUserDto;
 
   if (dto.age !== undefined && (typeof dto.age !== 'number' || dto.age < 0)) {
@@ -59,36 +68,43 @@ export function updateUser(req: Request, res: Response, next: NextFunction): voi
     return;
   }
 
-  const updated = userService.updateUser(req.params.id, dto);
-  if (!updated) {
-    res.status(404).json({ success: false, error: 'User not found' });
-    return;
+  try {
+    const updated = await userService.updateUser(req.params.id, dto);
+    if (!updated) {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    next(err);
   }
-
-  res.json({ success: true, data: updated });
 }
 
-export function deleteUser(req: Request, res: Response, next: NextFunction): void {
-  const result = userService.deleteUser(req.params.id);
+export async function deleteUser(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const result = await userService.deleteUser(req.params.id);
 
-  if (result === 'NOT_FOUND') {
-    res.status(404).json({ success: false, error: 'User not found' });
-    return;
-  }
-  if (result === 'LINKED') {
-    res.status(409).json({
-      success: false,
-      error: 'Cannot delete user while they are still connected to friends. Unlink first.',
-    });
-    return;
-  }
+    if (result === 'NOT_FOUND') {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
+    if (result === 'LINKED') {
+      res.status(409).json({
+        success: false,
+        error: 'Cannot delete user while they are still connected to friends. Unlink first.',
+      });
+      return;
+    }
 
-  res.json({ success: true, message: 'User deleted' });
+    res.json({ success: true, message: 'User deleted' });
+  } catch (err) {
+    next(err);
+  }
 }
 
 // ─── Relationships ────────────────────────────────────────────────────────────
 
-export function linkUsers(req: Request, res: Response, next: NextFunction): void {
+export async function linkUsers(req: Request, res: Response, next: NextFunction): Promise<void> {
   const { targetUserId } = req.body as LinkDto;
 
   if (!targetUserId) {
@@ -96,25 +112,29 @@ export function linkUsers(req: Request, res: Response, next: NextFunction): void
     return;
   }
 
-  const result = userService.linkUsers(req.params.id, targetUserId);
+  try {
+    const result = await userService.linkUsers(req.params.id, targetUserId);
 
-  if (result === 'NOT_FOUND') {
-    res.status(404).json({ success: false, error: 'One or both users not found' });
-    return;
-  }
-  if (result === 'SELF_LINK') {
-    res.status(400).json({ success: false, error: 'Cannot link a user to themselves' });
-    return;
-  }
-  if (result === 'ALREADY_LINKED') {
-    res.status(409).json({ success: false, error: 'Users are already friends' });
-    return;
-  }
+    if (result === 'NOT_FOUND') {
+      res.status(404).json({ success: false, error: 'One or both users not found' });
+      return;
+    }
+    if (result === 'SELF_LINK') {
+      res.status(400).json({ success: false, error: 'Cannot link a user to themselves' });
+      return;
+    }
+    if (result === 'ALREADY_LINKED') {
+      res.status(409).json({ success: false, error: 'Users are already friends' });
+      return;
+    }
 
-  res.json({ success: true, message: 'Friendship created' });
+    res.json({ success: true, message: 'Friendship created' });
+  } catch (err) {
+    next(err);
+  }
 }
 
-export function unlinkUsers(req: Request, res: Response, next: NextFunction): void {
+export async function unlinkUsers(req: Request, res: Response, next: NextFunction): Promise<void> {
   const { targetUserId } = req.body as LinkDto;
 
   if (!targetUserId) {
@@ -122,55 +142,75 @@ export function unlinkUsers(req: Request, res: Response, next: NextFunction): vo
     return;
   }
 
-  const result = userService.unlinkUsers(req.params.id, targetUserId);
+  try {
+    const result = await userService.unlinkUsers(req.params.id, targetUserId);
 
-  if (result === 'NOT_FOUND') {
-    res.status(404).json({ success: false, error: 'One or both users not found' });
-    return;
-  }
-  if (result === 'NOT_LINKED') {
-    res.status(409).json({ success: false, error: 'Users are not friends' });
-    return;
-  }
+    if (result === 'NOT_FOUND') {
+      res.status(404).json({ success: false, error: 'One or both users not found' });
+      return;
+    }
+    if (result === 'NOT_LINKED') {
+      res.status(409).json({ success: false, error: 'Users are not friends' });
+      return;
+    }
 
-  res.json({ success: true, message: 'Friendship removed' });
+    res.json({ success: true, message: 'Friendship removed' });
+  } catch (err) {
+    next(err);
+  }
 }
 
 // ─── Recommendations ──────────────────────────────────────────────────────────
 
-export function getRecommendations(req: Request, res: Response, next: NextFunction): void {
-  const user = userService.getUserById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, error: 'User not found' });
-    return;
-  }
+export async function getRecommendations(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const user = await userService.getUserById(req.params.id);
+    if (!user) {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
 
-  const recommendations = recommendationService.getRecommendations(req.params.id);
-  res.json({ success: true, data: recommendations });
+    const recommendations = await recommendationService.getRecommendations(req.params.id);
+    res.json({ success: true, data: recommendations });
+  } catch (err) {
+    next(err);
+  }
 }
 
-export function postRecommendationFeedback(req: Request, res: Response, next: NextFunction): void {
-  const user = userService.getUserById(req.params.id);
-  if (!user) {
-    res.status(404).json({ success: false, error: 'User not found' });
-    return;
-  }
+export async function postRecommendationFeedback(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const user = await userService.getUserById(req.params.id);
+    if (!user) {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
 
-  const { targetId, type, feedback } = req.body as FeedbackDto;
+    const { targetId, type, feedback } = req.body as FeedbackDto;
 
-  if (!targetId) {
-    res.status(400).json({ success: false, error: 'targetId is required' });
-    return;
-  }
-  if (!['friend', 'hobby'].includes(type)) {
-    res.status(400).json({ success: false, error: 'type must be "friend" or "hobby"' });
-    return;
-  }
-  if (!['accepted', 'rejected'].includes(feedback)) {
-    res.status(400).json({ success: false, error: 'feedback must be "accepted" or "rejected"' });
-    return;
-  }
+    if (!targetId) {
+      res.status(400).json({ success: false, error: 'targetId is required' });
+      return;
+    }
+    if (!['friend', 'hobby'].includes(type)) {
+      res.status(400).json({ success: false, error: 'type must be "friend" or "hobby"' });
+      return;
+    }
+    if (!['accepted', 'rejected'].includes(feedback)) {
+      res.status(400).json({ success: false, error: 'feedback must be "accepted" or "rejected"' });
+      return;
+    }
 
-  recommendationService.saveRecommendationFeedback(req.params.id, { targetId, type, feedback });
-  res.json({ success: true, message: 'Feedback recorded. Future recommendations updated.' });
+    await recommendationService.saveRecommendationFeedback(req.params.id, { targetId, type, feedback });
+    res.json({ success: true, message: 'Feedback recorded. Future recommendations updated.' });
+  } catch (err) {
+    next(err);
+  }
 }

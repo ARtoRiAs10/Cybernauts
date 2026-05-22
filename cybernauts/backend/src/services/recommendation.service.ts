@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db';
+import pool from '../db';
 import type {
   User,
   UserRow,
@@ -14,17 +14,18 @@ import type {
 function parseUserRow(row: UserRow): User {
   return {
     ...row,
-    hobbies: JSON.parse(row.hobbies),
-    friends: JSON.parse(row.friends),
+    hobbies: typeof row.hobbies === 'string' ? JSON.parse(row.hobbies) : row.hobbies,
+    friends: typeof row.friends === 'string' ? JSON.parse(row.friends) : row.friends,
   };
 }
 
-function getAllUsers(): User[] {
-  const rows = db.prepare('SELECT * FROM users').all() as UserRow[];
+async function getAllUsers(): Promise<User[]> {
+  // FIXED: Standardized fetch tracking on users table search sweeps
+  const { rows } = await pool.query<UserRow>('SELECT * FROM users');
   return rows.map(parseUserRow);
 }
 
-/** Jaccard similarity between two string sets — semantic signal for hobbies */
+/** Jaccard similarity between two string sets */
 function jaccardSimilarity(a: string[], b: string[]): number {
   if (a.length === 0 && b.length === 0) return 0;
   const setA = new Set(a);
@@ -56,15 +57,17 @@ function graphDistance(fromId: string, toId: string, userMap: Map<string, User>)
     }
   }
 
-  return Infinity; // no path found
+  return Infinity;
 }
 
 type FeedbackMap = Map<string, 'accepted' | 'rejected'>;
 
-function loadFeedbackMap(userId: string): FeedbackMap {
-  const rows = db
-    .prepare('SELECT targetId, feedback FROM recommendation_feedback WHERE userId = ?')
-    .all(userId) as Array<{ targetId: string; feedback: string }>;
+async function loadFeedbackMap(userId: string): Promise<FeedbackMap> {
+
+  const { rows } = await pool.query<{ targetId: string; feedback: string }>(
+    `SELECT "targetId", "feedback" FROM recommendation_feedback WHERE "userId" = $1`,
+    [userId]
+  );
 
   const map: FeedbackMap = new Map();
   for (const r of rows) {
@@ -75,39 +78,34 @@ function loadFeedbackMap(userId: string): FeedbackMap {
 
 // ─── Friend Recommendations ──────────────────────────────────────────────────
 
-export function getFriendRecommendations(userId: string): FriendRecommendation[] {
-  const allUsers = getAllUsers();
+export async function getFriendRecommendations(userId: string): Promise<FriendRecommendation[]> {
+  const allUsers = await getAllUsers();
   const userMap = new Map(allUsers.map((u) => [u.id, u]));
 
   const user = userMap.get(userId);
   if (!user) return [];
 
   const friendSet = new Set(user.friends);
-  const feedbackMap = loadFeedbackMap(userId);
+  const feedbackMap = await loadFeedbackMap(userId);
 
   const candidates = allUsers.filter((u) => u.id !== userId && !friendSet.has(u.id));
 
   const scored = candidates.map((candidate) => {
-    // Signal 1 — mutual friends (graph topology signal)
     const mutualFriends = candidate.friends.filter(
       (fId) => friendSet.has(fId) && fId !== userId
     );
     const mutualScore = mutualFriends.length * 2;
 
-    // Signal 2 — hobby similarity via Jaccard (semantic signal)
     const hobbyScore = jaccardSimilarity(user.hobbies, candidate.hobbies) * 3;
 
-    // Signal 3 — graph proximity via BFS (graph proximity signal)
     const dist = graphDistance(userId, candidate.id, userMap);
     const proximityScore = dist === Infinity ? 0 : Math.max(0, 4 - dist);
 
-    // Signal 4 — feedback adjustment
     const fb = feedbackMap.get(candidate.id);
     const feedbackAdj = fb === 'accepted' ? 2 : fb === 'rejected' ? -5 : 0;
 
     const totalScore = mutualScore + hobbyScore + proximityScore + feedbackAdj;
 
-    // Human-readable reason
     const sharedHobbies = user.hobbies.filter((h) => candidate.hobbies.includes(h));
     const sourceSignals: string[] = [];
 
@@ -139,17 +137,16 @@ export function getFriendRecommendations(userId: string): FriendRecommendation[]
 
 // ─── Hobby Recommendations ───────────────────────────────────────────────────
 
-export function getHobbyRecommendations(userId: string): HobbyRecommendation[] {
-  const allUsers = getAllUsers();
+export async function getHobbyRecommendations(userId: string): Promise<HobbyRecommendation[]> {
+  const allUsers = await getAllUsers();
   const userMap = new Map(allUsers.map((u) => [u.id, u]));
 
   const user = userMap.get(userId);
   if (!user) return [];
 
   const userHobbySet = new Set(user.hobbies);
-  const feedbackMap = loadFeedbackMap(userId);
+  const feedbackMap = await loadFeedbackMap(userId);
 
-  // Accumulate hobby scores from direct friends (weight: 2) and friends-of-friends (weight: 0.5)
   const hobbyScores = new Map<string, { score: number; sources: Set<string> }>();
 
   const accumulateHobby = (hobby: string, weight: number, source: string) => {
@@ -182,7 +179,6 @@ export function getHobbyRecommendations(userId: string): HobbyRecommendation[] {
   const results: HobbyRecommendation[] = [];
 
   for (const [hobby, { score, sources }] of hobbyScores.entries()) {
-    // Feedback uses "hobby:<name>" as the targetId key
     const fb = feedbackMap.get(`hobby:${hobby}`);
     const feedbackAdj = fb === 'accepted' ? 1.5 : fb === 'rejected' ? -10 : 0;
     const finalScore = score + feedbackAdj;
@@ -204,26 +200,28 @@ export function getHobbyRecommendations(userId: string): HobbyRecommendation[] {
 
 // ─── Combined ────────────────────────────────────────────────────────────────
 
-export function getRecommendations(userId: string): RecommendationsResponse {
-  return {
-    friends: getFriendRecommendations(userId),
-    hobbies: getHobbyRecommendations(userId),
-  };
+export async function getRecommendations(userId: string): Promise<RecommendationsResponse> {
+  const [friends, hobbies] = await Promise.all([
+    getFriendRecommendations(userId),
+    getHobbyRecommendations(userId),
+  ]);
+  return { friends, hobbies };
 }
 
 // ─── Feedback ────────────────────────────────────────────────────────────────
 
-export function saveRecommendationFeedback(userId: string, dto: FeedbackDto): void {
+export async function saveRecommendationFeedback(userId: string, dto: FeedbackDto): Promise<void> {
   const id = uuidv4();
   const now = new Date().toISOString();
 
-  // targetId for hobby feedback is "hobby:<hobbyName>" to avoid collision with user IDs
   const targetId = dto.type === 'hobby' ? `hobby:${dto.targetId}` : dto.targetId;
 
-  // UPSERT — if the user changed their mind, update
-  db.prepare(`
-    INSERT INTO recommendation_feedback (id, userId, targetId, type, feedback, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(userId, targetId, type) DO UPDATE SET feedback = excluded.feedback, createdAt = excluded.createdAt
-  `).run(id, userId, targetId, dto.type, dto.feedback, now);
+ 
+  await pool.query(
+    `INSERT INTO recommendation_feedback ("id", "userId", "targetId", "type", "feedback", "createdAt")
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT("userId", "targetId", "type")
+     DO UPDATE SET "feedback" = EXCLUDED."feedback", "createdAt" = EXCLUDED."createdAt"`,
+    [id, userId, targetId, dto.type, dto.feedback, now]
+  );
 }
