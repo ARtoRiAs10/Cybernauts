@@ -4,25 +4,15 @@ import type {
   RecommendationsResponse,
 } from '../types';
 
-declare const process: {
-  env: {
-    NEXT_PUBLIC_API_BASE_URL?: string;
-  };
-};
+// Hardcoded — no env var that can be set wrong on Vercel
+const BASE = 'https://cybernauts-qu78.vercel.app/api';
 
-// CRUCIAL: Point this directly to your deployed backend Vercel URL
-// Ensure you do NOT leave a trailing slash at the end of the base URL domain string
-const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'https://cybernauts-backend.vercel.app/api';
-
-async function req<T>(
-  path: string,
-  options?: RequestInit
-): Promise<T> {
+async function req<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...options,
-    headers: { 
+    headers: {
       'Content-Type': 'application/json',
-      ...(options?.headers || {}) 
+      ...(options?.headers || {}),
     },
   });
 
@@ -32,38 +22,40 @@ async function req<T>(
   if (!res.ok) {
     throw new Error(json.error ?? `Server error returned with status: ${res.status}`);
   }
-  
+
   return json.data ?? json;
 }
 
 export const api = {
-  
+  // Users
   getUsers: () => req<User[]>('/users'),
   getUser: (id: string) => req<User>(`/users/${id}`),
   createUser: (body: { username: string; age: number; hobbies: string[] }) =>
     req<User>('/users', { method: 'POST', body: JSON.stringify(body) }),
-  updateUser: (id: string, body: Partial<{ username: string; age: number; hobbies: string[] }>) =>
-    req<User>(`/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  updateUser: (
+    id: string,
+    body: Partial<{ username: string; age: number; hobbies: string[] }>
+  ) => req<User>(`/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteUser: (id: string) =>
     req<{ message: string }>(`/users/${id}`, { method: 'DELETE' }),
 
-  
+  // Relationships
   linkUsers: (id: string, targetUserId: string) =>
     req<{ message: string }>(`/users/${id}/link`, {
       method: 'POST',
       body: JSON.stringify({ targetUserId }),
     }),
-    
- 
   unlinkUsers: (id: string, targetUserId: string) =>
-    req<{ message: string }>(`/users/${id}/unlink/${targetUserId}`, {
+    // FIX: was /unlink/${targetUserId} — backend expects body, not URL param
+    req<{ message: string }>(`/users/${id}/unlink`, {
       method: 'DELETE',
+      body: JSON.stringify({ targetUserId }),
     }),
 
-
+  // Graph
   getGraph: () => req<GraphData>('/graph'),
 
-
+  // Recommendations
   getRecommendations: (id: string) =>
     req<RecommendationsResponse>(`/users/${id}/recommendations`),
   postFeedback: (
