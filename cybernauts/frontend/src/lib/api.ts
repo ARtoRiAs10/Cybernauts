@@ -4,7 +4,15 @@ import type {
   RecommendationsResponse,
 } from '../types';
 
-const BASE = '/api';
+declare const process: {
+  env: {
+    NEXT_PUBLIC_API_BASE_URL?: string;
+  };
+};
+
+// CRUCIAL: Point this directly to your deployed backend Vercel URL
+// Ensure you do NOT leave a trailing slash at the end of the base URL domain string
+const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'https://cybernauts-backend.vercel.app/api';
 
 async function req<T>(
   path: string,
@@ -17,7 +25,6 @@ async function req<T>(
       ...(options?.headers || {}) 
     },
   });
-
 
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
