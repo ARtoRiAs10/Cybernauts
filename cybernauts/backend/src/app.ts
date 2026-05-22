@@ -6,8 +6,36 @@ import { errorMiddleware, notFoundMiddleware } from './middleware/error.middlewa
 
 const app = express();
 
-// ─── Global Middleware ────────────────────────────────────────────────────────
-app.use(cors());
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+// Must be BEFORE all routes so OPTIONS preflight is caught here first.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (curl, Postman, server-to-server)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS: origin "${origin}" not allowed`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With',
+      'Accept',
+    ],
+  })
+);
+
+// Explicitly respond 200 to every OPTIONS preflight — this is the critical fix.
+app.options('*', cors());
+
+// ─── Body Parser ──────────────────────────────────────────────────────────────
 app.use(express.json());
 
 // ─── Routes ───────────────────────────────────────────────────────────────────

@@ -11,9 +11,16 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+
+if (process.env.VERCEL !== '1') {
+  bootstrap().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+} else {
+  
+  initDb().catch(console.error);
+}
+
 
 export default app;
