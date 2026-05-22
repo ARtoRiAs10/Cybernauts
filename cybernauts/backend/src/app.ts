@@ -7,33 +7,28 @@ import { errorMiddleware, notFoundMiddleware } from './middleware/error.middlewa
 const app = express();
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
-// Must be BEFORE all routes so OPTIONS preflight is caught here first.
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+// Hardcode the origin — no env var needed, no silent failures.
+const FRONTEND_URL = 'https://cybernauts-theta.vercel.app';
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests with no origin (curl, Postman, server-to-server)
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      callback(new Error(`CORS: origin "${origin}" not allowed`));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-Requested-With',
-      'Accept',
-    ],
-  })
-);
+const corsOptions: cors.CorsOptions = {
+  origin: [FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5173'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  optionsSuccessStatus: 200, // Some browsers (IE11) choke on 204
+};
 
-// Explicitly respond 200 to every OPTIONS preflight — this is the critical fix.
-app.options('*', cors());
+// Apply to all routes
+app.use(cors(corsOptions));
+
+// Explicitly handle preflight for every route — this is critical
+app.options('*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', FRONTEND_URL);
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.sendStatus(200);
+});
 
 // ─── Body Parser ──────────────────────────────────────────────────────────────
 app.use(express.json());
